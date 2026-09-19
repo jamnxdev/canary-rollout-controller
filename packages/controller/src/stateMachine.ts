@@ -25,6 +25,14 @@ export interface RolloutStateMachineConfig {
   splitter: TrafficSplitter;
   metrics: MetricsCollector;
   decide: DecisionEngine;
+  /**
+   * Called right after metrics.reset() on every stage advance. Stateful
+   * decision engines that estimate something from that stage's own traffic
+   * (the SPRT controller freezes p0/p1 this way, see its docstring) must
+   * reset that state here too, or a later stage will silently keep judging
+   * against an earlier stage's baseline estimate.
+   */
+  onStageAdvance?: () => void;
 }
 
 /**
@@ -96,6 +104,7 @@ export class RolloutStateMachine {
       } else {
         this.stageIndex += 1;
         this.config.metrics.reset();
+        this.config.onStageAdvance?.();
         this.config.splitter.setCanaryPercent(this.config.stages[this.stageIndex] as number);
       }
     }

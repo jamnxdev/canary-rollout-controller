@@ -89,6 +89,28 @@ describe("RolloutStateMachine", () => {
     expect(machine.tick()).toBe("completed"); // terminal, no-op
   });
 
+  it("calls onStageAdvance right after resetting metrics on every stage advance", () => {
+    const splitter = new TrafficSplitter();
+    const metrics = new MetricsCollector();
+    const calls: string[] = [];
+    vi.spyOn(metrics, "reset").mockImplementation(() => calls.push("reset"));
+    const onStageAdvance = vi.fn(() => calls.push("onStageAdvance"));
+    const machine = new RolloutStateMachine({
+      stages: [5, 25, 100],
+      splitter,
+      metrics,
+      decide: scriptedDecider(["proceed"]),
+      onStageAdvance,
+    });
+
+    machine.start(); // calls reset(), not onStageAdvance (stage 0 is the initial stage, not an advance)
+    expect(calls).toEqual(["reset"]);
+
+    machine.tick(); // proceed: stage 0 -> 1
+    expect(onStageAdvance).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["reset", "reset", "onStageAdvance"]);
+  });
+
   it("holds in place without advancing or resetting metrics", () => {
     const splitter = new TrafficSplitter();
     const metrics = new MetricsCollector();

@@ -56,24 +56,41 @@ function clampProbability(p: number): number {
  * The tradeoff is real and worth stating plainly: if the baseline sample is
  * small or unusually noisy, p0 itself is a noisy estimate, which is why
  * minBaselineSamples exists as a floor before the test runs at all.
+ *
+ * **p0/p1 are frozen the first time the baseline crosses minBaselineSamples,
+ * not re-estimated on every call.** This was not the original design — see
+ * the Day 5 implementation log for how the A/A validation run surfaced it:
+ * re-estimating p0 fresh on every evaluate() call means every tick is
+ * technically a *different* hypothesis test (a slightly different null each
+ * time), which breaks the fixed-hypothesis assumption the Wald boundaries
+ * rely on, and in practice inflated the empirical false-positive rate well
+ * above the target alpha. Freezing p0/p1 once, from the first baseline
+ * sample that clears the floor, restores a single well-defined null/
+ * alternative pair for the whole test — the textbook SPRT setup. Call
+ * reset() when starting a new stage (a fresh controller instance per stage
+ * works too) so the next stage's p0 is estimated from *that* stage's own
+ * baseline traffic, not carried over from the previous one.
  */
 export class SequentialProbabilityRatioController {
+  private frozenP0: number | undefined;
+  private frozenP1: number | undefined;
+
   constructor(private readonly config: SprtConfig) {}
 
   evaluate(baseline: VersionStats, canary: VersionStats): SprtResult {
-    if (baseline.count < this.config.minBaselineSamples || canary.count === 0) {
-      return {
-        decision: "hold",
-        logLikelihoodRatio: 0,
-        upperBoundary: this.upperBoundary(),
-        lowerBoundary: this.lowerBoundary(),
-        p0: NaN,
-        p1: NaN,
-      };
+    if (this.frozenP0 === undefined) {
+      if (baseline.count < this.config.minBaselineSamples) {
+        return this.holdResult(NaN, NaN);
+      }
+      this.frozenP0 = clampProbability(baseline.errorRate);
+      this.frozenP1 = clampProbability(this.frozenP0 + this.config.minimumDetectableEffect);
     }
+    const p0 = this.frozenP0;
+    const p1 = this.frozenP1 as number;
 
-    const p0 = clampProbability(baseline.errorRate);
-    const p1 = clampProbability(p0 + this.config.minimumDetectableEffect);
+    if (canary.count === 0) {
+      return this.holdResult(p0, p1);
+    }
 
     const n = canary.count;
     const k = canary.errors;
@@ -92,6 +109,23 @@ export class SequentialProbabilityRatioController {
     }
 
     return { decision, logLikelihoodRatio: llr, upperBoundary, lowerBoundary, p0, p1 };
+  }
+
+  /** Clears the frozen p0/p1 so the next evaluate() re-estimates from scratch — call at each new stage. */
+  reset(): void {
+    this.frozenP0 = undefined;
+    this.frozenP1 = undefined;
+  }
+
+  private holdResult(p0: number, p1: number): SprtResult {
+    return {
+      decision: "hold",
+      logLikelihoodRatio: 0,
+      upperBoundary: this.upperBoundary(),
+      lowerBoundary: this.lowerBoundary(),
+      p0,
+      p1,
+    };
   }
 
   /** Reject H0 (regression detected) once the LLR crosses log((1-beta)/alpha). */

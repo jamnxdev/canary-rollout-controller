@@ -1,6 +1,8 @@
 export interface LoadOptions {
   durationMs: number;
   concurrency: number;
+  /** When it returns true, workers stop even if durationMs hasn't elapsed yet. */
+  shouldStop?: () => boolean;
 }
 
 export interface LoadResult {
@@ -21,7 +23,7 @@ export async function runLoad(proxyUrl: string, opts: LoadOptions): Promise<Load
   let errors = 0;
 
   async function worker(): Promise<void> {
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !(opts.shouldStop?.() ?? false)) {
       sent++;
       try {
         const response = await fetch(`${proxyUrl}/work`);
