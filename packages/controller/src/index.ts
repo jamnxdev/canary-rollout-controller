@@ -11,3 +11,4 @@ export {
   type RolloutEvent,
   type RolloutStateMachineConfig,
 } from "./stateMachine.js";
+export { buildDashboardApp, type DashboardSnapshot, type SnapshotProvider } from "./dashboard.js";

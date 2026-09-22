@@ -26,13 +26,22 @@ export interface RolloutStateMachineConfig {
   metrics: MetricsCollector;
   decide: DecisionEngine;
   /**
-   * Called right after metrics.reset() on every stage advance. Stateful
-   * decision engines that estimate something from that stage's own traffic
-   * (the SPRT controller freezes p0/p1 this way, see its docstring) must
-   * reset that state here too, or a later stage will silently keep judging
-   * against an earlier stage's baseline estimate.
+   * Called right after metrics.reset() on every stage advance, with the
+   * *new* stage's canary percent. Stateful decision engines that estimate
+   * something from that stage's own traffic (the SPRT controller freezes
+   * p0/p1 this way, see its docstring) generally reset that state here, or
+   * a later stage will silently keep judging against an earlier stage's
+   * baseline estimate.
+   *
+   * The new-stage percent is passed specifically so a caller can *skip*
+   * that reset at a 100%-canary stage: at 100%, the splitter sends no
+   * traffic to baseline at all, so a fresh baseline estimate can never
+   * accumulate there — resetting anyway would leave that final stage stuck
+   * on "hold" forever, with no path to ever reach minBaselineSamples again.
+   * See statisticalController.ts's docstring and the Day 6 implementation
+   * log for the full reasoning.
    */
-  onStageAdvance?: () => void;
+  onStageAdvance?: (newCanaryPercent: number) => void;
 }
 
 /**
@@ -103,9 +112,10 @@ export class RolloutStateMachine {
         this.status = "completed";
       } else {
         this.stageIndex += 1;
+        const newCanaryPercent = this.config.stages[this.stageIndex] as number;
         this.config.metrics.reset();
-        this.config.onStageAdvance?.();
-        this.config.splitter.setCanaryPercent(this.config.stages[this.stageIndex] as number);
+        this.config.onStageAdvance?.(newCanaryPercent);
+        this.config.splitter.setCanaryPercent(newCanaryPercent);
       }
     }
     // "hold": stay at the current stage, keep accumulating.

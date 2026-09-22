@@ -6,6 +6,7 @@ import { TrafficSplitter } from "../src/splitter.js";
 import { MetricsCollector } from "../src/metricsCollector.js";
 import { NaiveThresholdController } from "../src/naiveController.js";
 import { RolloutStateMachine } from "../src/stateMachine.js";
+import { SequentialProbabilityRatioController } from "../src/statisticalController.js";
 import { runLoad } from "../src/loadgen.js";
 
 /**
@@ -115,6 +116,66 @@ describe("rollout state machine, wired end-to-end", () => {
 
     const loadDone = runLoad(proxyUrl, { durationMs: 1500, concurrency: 8 });
     const finalStatus = await pollUntilTerminal(machine, 1500);
+    await loadDone;
+
+    expect(finalStatus).toBe("completed");
+    expect(splitter.getCanaryPercent()).toBe(100);
+  });
+
+  /**
+   * At a 100%-canary stage the splitter sends nothing to baseline, so the
+   * statistical controller can never accumulate a *fresh* baseline sample
+   * there. Without the onStageAdvance(newCanaryPercent) fix (Day 6), the
+   * SPRT controller's reset() before this final stage would clear its
+   * frozen p0/p1 and it would then sit on "hold" forever, with no path to
+   * ever re-freeze. This test locks in the fix: skip the reset when
+   * advancing into a 100% stage, carrying the previous stage's frozen p0/p1
+   * forward as the closest honest reference available.
+   */
+  it("still reaches completed at a 100% final stage with the statistical controller", async () => {
+    const baseline = buildServer({
+      versionLabel: "baseline",
+      latencyMs: 0,
+      latencyJitterMs: 0,
+      errorRate: 0.02,
+    });
+    const canary = buildServer({
+      versionLabel: "canary",
+      latencyMs: 0,
+      latencyJitterMs: 0,
+      errorRate: 0.02,
+    });
+    instances.push(baseline, canary);
+    const baselineUrl = await baseline.listen({ port: 0, host: "127.0.0.1" });
+    const canaryUrl = await canary.listen({ port: 0, host: "127.0.0.1" });
+
+    const splitter = new TrafficSplitter();
+    const metrics = new MetricsCollector();
+    const proxy = buildProxy(splitter, { baseline: baselineUrl, canary: canaryUrl }, (o) =>
+      metrics.record(o),
+    );
+    instances.push(proxy);
+    const proxyUrl = await proxy.listen({ port: 0, host: "127.0.0.1" });
+
+    const statistical = new SequentialProbabilityRatioController({
+      alpha: 0.05,
+      beta: 0.1,
+      minimumDetectableEffect: 0.1,
+      minBaselineSamples: 15,
+    });
+    const machine = new RolloutStateMachine({
+      stages: [50, 100],
+      splitter,
+      metrics,
+      decide: (baselineStats, canaryStats) => statistical.evaluate(baselineStats, canaryStats).decision,
+      onStageAdvance: (newCanaryPercent) => {
+        if (newCanaryPercent < 100) statistical.reset();
+      },
+    });
+    machine.start();
+
+    const loadDone = runLoad(proxyUrl, { durationMs: 3000, concurrency: 16 });
+    const finalStatus = await pollUntilTerminal(machine, 3000);
     await loadDone;
 
     expect(finalStatus).toBe("completed");

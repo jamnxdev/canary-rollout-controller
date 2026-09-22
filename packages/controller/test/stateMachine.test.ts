@@ -89,12 +89,12 @@ describe("RolloutStateMachine", () => {
     expect(machine.tick()).toBe("completed"); // terminal, no-op
   });
 
-  it("calls onStageAdvance right after resetting metrics on every stage advance", () => {
+  it("calls onStageAdvance right after resetting metrics on every stage advance, with the new stage's percent", () => {
     const splitter = new TrafficSplitter();
     const metrics = new MetricsCollector();
     const calls: string[] = [];
     vi.spyOn(metrics, "reset").mockImplementation(() => calls.push("reset"));
-    const onStageAdvance = vi.fn(() => calls.push("onStageAdvance"));
+    const onStageAdvance = vi.fn((pct: number) => calls.push(`onStageAdvance(${pct})`));
     const machine = new RolloutStateMachine({
       stages: [5, 25, 100],
       splitter,
@@ -106,9 +106,13 @@ describe("RolloutStateMachine", () => {
     machine.start(); // calls reset(), not onStageAdvance (stage 0 is the initial stage, not an advance)
     expect(calls).toEqual(["reset"]);
 
-    machine.tick(); // proceed: stage 0 -> 1
+    machine.tick(); // proceed: stage 0 (5%) -> 1 (25%)
     expect(onStageAdvance).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(["reset", "reset", "onStageAdvance"]);
+    expect(onStageAdvance).toHaveBeenCalledWith(25);
+    expect(calls).toEqual(["reset", "reset", "onStageAdvance(25)"]);
+
+    machine.tick(); // proceed: stage 1 (25%) -> 2 (100%)
+    expect(onStageAdvance).toHaveBeenLastCalledWith(100);
   });
 
   it("holds in place without advancing or resetting metrics", () => {
